@@ -1,13 +1,13 @@
-// app.js
 const express = require('express');
 const app = express();
-const port = process.env.PORT || 3000; // Important for deployment
+const port = process.env.PORT || 3000;
 
 // Set EJS as the templating engine
 app.set('view engine', 'ejs');
 
-// Serve static files (like CSS) from the 'public' folder
+// Serve static files from the 'public' folder
 app.use(express.static('public'));
+
 // To parse form data
 app.use(express.urlencoded({ extended: true }));
 
@@ -18,16 +18,29 @@ app.get('/', (req, res) => {
 
 // Route to handle the form submission and secure the Dockerfile
 app.post('/secure', (req, res) => {
-  const originalDockerfile = req.body.dockerfileContent;
+  try {
+    const originalDockerfile = req.body.dockerfileContent;
+    
+    if (!originalDockerfile || originalDockerfile.trim() === '') {
+      return res.render('index', { 
+        error: 'Please provide a Dockerfile to scan' 
+      });
+    }
 
-  // This function contains our security logic (see section 4)
-  const securedDockerfile = secureDockerfile(originalDockerfile);
+    // This function contains our security logic
+    const securedDockerfile = secureDockerfile(originalDockerfile);
 
-  // Render the result page and pass both Dockerfiles to it
-  res.render('result', {
-    original: originalDockerfile,
-    secured: securedDockerfile
-  });
+    // Render the result page and pass both Dockerfiles to it
+    res.render('result', {
+      original: originalDockerfile,
+      secured: securedDockerfile
+    });
+  } catch (error) {
+    console.error('Error processing Dockerfile:', error);
+    res.render('index', { 
+      error: 'An error occurred while processing your Dockerfile' 
+    });
+  }
 });
 
 // Start the server
@@ -35,11 +48,10 @@ app.listen(port, () => {
   console.log(`SecureScan app listening on port ${port}`);
 });
 
-// Function to secure the Dockerfile (will be implemented next)
+// Function to secure the Dockerfile
 function secureDockerfile(content) {
   let lines = content.split('\n');
   let newLines = [];
-
   let hasNonRootUser = false;
   let inAptInstall = false;
 
@@ -48,11 +60,16 @@ function secureDockerfile(content) {
 
     // Rule 1: Use a specific, slim tag for base images
     if (newLine.startsWith('FROM')) {
-      // A simple regex to find image names
       if (newLine.match(/FROM\s+(\S+):latest/)) {
-        newLine = newLine.replace(':latest', ':18-slim'); // Example for Node
+        newLine = newLine.replace(':latest', ':18-slim');
       }
-      // Add more rules for other popular base images (python, alpine, etc.)
+      // Add more rules for other popular base images
+      if (newLine.match(/FROM\s+python:latest/)) {
+        newLine = newLine.replace(':latest', ':3.9-slim');
+      }
+      if (newLine.match(/FROM\s+ubuntu:latest/)) {
+        newLine = newLine.replace(':latest', ':20.04');
+      }
     }
 
     // Rule 2: Add a non-root user
@@ -62,9 +79,9 @@ function secureDockerfile(content) {
 
     // Rule 3 & 4: Handle APT packages smartly
     if (newLine.startsWith('RUN apt-get update')) {
-      inAptInstall = true; // Next line is likely apt-get install
-      newLines.push(newLine); // Keep the update line
-      continue; // Skip adding this line again below
+      inAptInstall = true;
+      newLines.push(newLine);
+      continue;
     }
 
     if (inAptInstall && newLine.startsWith('RUN apt-get install')) {
@@ -77,9 +94,8 @@ function secureDockerfile(content) {
 
   // Add the non-root user commands if we didn't find them
   if (!hasNonRootUser) {
-    // Find a good place to insert the user, often before the COPY or CMD instructions
     let copyIndex = newLines.findIndex(l => l.startsWith('COPY'));
-    if (copyIndex === -1) copyIndex = newLines.length; // If no COPY, add at end
+    if (copyIndex === -1) copyIndex = newLines.length;
 
     newLines.splice(copyIndex, 0, 'RUN groupadd -r appuser && useradd -r -g appuser appuser');
     newLines.splice(copyIndex + 1, 0, 'USER appuser');
